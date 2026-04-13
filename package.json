@@ -1,0 +1,10 @@
+{
+  "name": "novel-ai",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:web": "pnpm --filter @novel-ai/web dev",
+    "build:web": "pnpm --filter @novel-ai/web build",
+    "dev:api": "cd apps/api && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+  }
+}
