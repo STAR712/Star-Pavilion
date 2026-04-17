@@ -1,40 +1,32 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from auth_utils import get_current_user
 from database import get_db
-from models import Bookshelf, Book
-from config import settings
+from models import Book, Bookshelf, User
 
 router = APIRouter(prefix="/bookshelf", tags=["书架"])
 
 
 class AddBookshelfRequest(BaseModel):
     book_id: int
-    user_id: int | None = None
 
 
 class UpdateProgressRequest(BaseModel):
     current_chapter: int
     progress: float
-    user_id: int | None = None
-
-
-def _get_user_id(request_user_id: int | None) -> int:
-    """获取实际 user_id，如果请求中未提供则使用默认值"""
-    return request_user_id if request_user_id is not None else settings.default_user_id
 
 
 @router.get("")
 def get_bookshelf(
-    user_id: int | None = Query(None, description="用户ID，不传则使用默认用户"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """获取用户书架"""
-    uid = user_id if user_id is not None else settings.default_user_id
+    """获取当前登录用户的书架"""
     items = (
         db.query(Bookshelf)
-        .filter(Bookshelf.user_id == uid)
+        .filter(Bookshelf.user_id == current_user.id)
         .all()
     )
     result = []
@@ -48,6 +40,10 @@ def get_bookshelf(
                     "book_title": book.title,
                     "book_author": book.author,
                     "book_cover_url": book.cover_url,
+                    "book_category": book.category,
+                    "book_description": book.description,
+                    "book_status": book.status,
+                    "book_word_count": book.word_count,
                     "current_chapter": item.current_chapter,
                     "progress": item.progress,
                     "added_at": str(item.added_at) if item.added_at else None,
@@ -60,23 +56,26 @@ def get_bookshelf(
 
 
 @router.post("")
-def add_to_bookshelf(req: AddBookshelfRequest, db: Session = Depends(get_db)):
-    """加入书架"""
-    uid = _get_user_id(req.user_id)
+def add_to_bookshelf(
+    req: AddBookshelfRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """加入当前登录用户书架"""
     book = db.query(Book).filter(Book.id == req.book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
     existing = (
         db.query(Bookshelf)
         .filter(
-            Bookshelf.user_id == uid,
+            Bookshelf.user_id == current_user.id,
             Bookshelf.book_id == req.book_id,
         )
         .first()
     )
     if existing:
         raise HTTPException(status_code=400, detail="该书已在书架中")
-    item = Bookshelf(user_id=uid, book_id=req.book_id)
+    item = Bookshelf(user_id=current_user.id, book_id=req.book_id)
     db.add(item)
     db.commit()
     return {"message": "已加入书架"}
@@ -84,14 +83,16 @@ def add_to_bookshelf(req: AddBookshelfRequest, db: Session = Depends(get_db)):
 
 @router.put("/{book_id}")
 def update_progress(
-    book_id: int, req: UpdateProgressRequest, db: Session = Depends(get_db)
+    book_id: int,
+    req: UpdateProgressRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """更新阅读进度"""
-    uid = _get_user_id(req.user_id)
+    """更新当前登录用户的阅读进度"""
     item = (
         db.query(Bookshelf)
         .filter(
-            Bookshelf.user_id == uid,
+            Bookshelf.user_id == current_user.id,
             Bookshelf.book_id == book_id,
         )
         .first()
@@ -107,15 +108,14 @@ def update_progress(
 @router.delete("/{book_id}")
 def remove_from_bookshelf(
     book_id: int,
-    user_id: int | None = Query(None, description="用户ID，不传则使用默认用户"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """移出书架"""
-    uid = user_id if user_id is not None else settings.default_user_id
+    """从当前登录用户书架移出"""
     item = (
         db.query(Bookshelf)
         .filter(
-            Bookshelf.user_id == uid,
+            Bookshelf.user_id == current_user.id,
             Bookshelf.book_id == book_id,
         )
         .first()

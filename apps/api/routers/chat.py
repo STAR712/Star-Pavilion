@@ -1,11 +1,13 @@
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from auth_utils import get_optional_current_user
 from config import settings
-from services.rag_service import rag_service
+from models import User
+from services.rag_service import get_rag_service
 
 router = APIRouter(prefix="/chat", tags=["AI对话"])
 
@@ -15,20 +17,27 @@ class ChatRequest(BaseModel):
     book_id: int | None = None
     chapter_id: int | None = None
     search_all: bool = True
-    user_id: int | None = None
     role: str | None = None
     conversation_id: int | None = None
 
 
 @router.post("/stream")
-async def stream_chat(req: ChatRequest):
+async def stream_chat(
+    req: ChatRequest,
+    current_user: User | None = Depends(get_optional_current_user),
+):
     """流式对话（SSE），携带 book_id + chapter_id + user_id + conversation_id"""
-    uid = req.user_id if req.user_id is not None else settings.default_user_id
-    user_role = req.role if req.role is not None else settings.default_user_role
+    uid = current_user.id if current_user is not None else settings.default_user_id
+    user_role = (
+        req.role
+        if req.role is not None
+        else (current_user.role if current_user is not None else settings.default_user_role)
+    )
 
     async def event_generator():
         full_response = ""
         try:
+            rag_service = get_rag_service()
             async for chunk in rag_service.stream_chat(
                 messages=req.messages,
                 book_id=req.book_id,

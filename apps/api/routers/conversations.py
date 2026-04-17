@@ -1,15 +1,16 @@
 """会话管理路由"""
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from auth_utils import get_current_user
 from config import settings
 from database import get_db
-from models import Conversation
-from services.rag_service import rag_service
+from models import Conversation, User
+from services.rag_service import get_rag_service
 
 router = APIRouter(prefix="/conversations", tags=["会话管理"])
 
@@ -17,32 +18,24 @@ TZ_OFFSET = 8
 
 
 class ConversationCreate(BaseModel):
-    user_id: int | None = None
     book_id: int | None = None
     chapter_id: int | None = None
     name: str = "新对话"
 
 
 class ConversationUpdate(BaseModel):
-    user_id: int | None = None
     name: str | None = None
     messages: list[dict] | None = None
-
-
-def _get_user_id(request_user_id: int | None) -> int:
-    """获取实际 user_id，如果请求中未提供则使用默认值"""
-    return request_user_id if request_user_id is not None else settings.default_user_id
 
 
 @router.get("")
 def list_conversations(
     book_id: int | None = None,
-    user_id: int | None = Query(None, description="用户ID，不传则使用默认用户"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """获取会话列表（按 user_id 过滤）"""
-    uid = user_id if user_id is not None else settings.default_user_id
-    query = db.query(Conversation).filter(Conversation.user_id == uid)
+    """获取当前登录用户的会话列表"""
+    query = db.query(Conversation).filter(Conversation.user_id == current_user.id)
     if book_id is not None:
         query = query.filter(Conversation.book_id == book_id)
     conversations = query.order_by(desc(Conversation.updated_at)).all()
@@ -65,12 +58,12 @@ def list_conversations(
 @router.post("")
 def create_conversation(
     req: ConversationCreate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """创建会话"""
-    uid = _get_user_id(req.user_id)
     conv = Conversation(
-        user_id=uid,
+        user_id=current_user.id,
         book_id=req.book_id,
         chapter_id=req.chapter_id,
         name=req.name,
@@ -84,14 +77,16 @@ def create_conversation(
 @router.get("/{conversation_id}")
 def get_conversation(
     conversation_id: int,
-    user_id: int | None = Query(None, description="用户ID，不传则使用默认用户"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """获取会话详情（按 user_id 过滤）"""
-    uid = user_id if user_id is not None else settings.default_user_id
+    """获取当前登录用户的会话详情"""
     conv = (
         db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == uid)
+        .filter(
+            Conversation.id == conversation_id,
+            Conversation.user_id == current_user.id,
+        )
         .first()
     )
     if not conv:
@@ -109,13 +104,16 @@ def get_conversation(
 def update_conversation(
     conversation_id: int,
     req: ConversationUpdate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """更新会话"""
-    uid = _get_user_id(req.user_id)
     conv = (
         db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == uid)
+        .filter(
+            Conversation.id == conversation_id,
+            Conversation.user_id == current_user.id,
+        )
         .first()
     )
     if not conv:
@@ -151,6 +149,7 @@ def _store_conversation_memory(conv: Conversation):
         # 计算 turn_index
         turn_count = sum(1 for m in messages if m.get("role") == "user")
         try:
+            rag_service = get_rag_service()
             rag_service.store_conversation_turn(
                 user_id=conv.user_id or settings.default_user_id,
                 book_id=conv.book_id,
@@ -167,14 +166,16 @@ def _store_conversation_memory(conv: Conversation):
 @router.delete("/{conversation_id}")
 def delete_conversation(
     conversation_id: int,
-    user_id: int | None = Query(None, description="用户ID，不传则使用默认用户"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """删除会话"""
-    uid = user_id if user_id is not None else settings.default_user_id
     conv = (
         db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == uid)
+        .filter(
+            Conversation.id == conversation_id,
+            Conversation.user_id == current_user.id,
+        )
         .first()
     )
     if not conv:

@@ -1,244 +1,584 @@
 <template>
   <div
-    class="min-h-screen transition-colors duration-300"
-    :class="themeClasses"
+    class="reader-shell"
+    :class="{ 'reader-shell--chat-open': chatOpen }"
+    :style="readerCssVars"
   >
-    <!-- 加载中 -->
-    <div v-if="loading" class="flex items-center justify-center py-20">
-      <div class="animate-spin w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full"></div>
-    </div>
+    <header class="reader-header">
+      <div class="reader-header__inner page-shell">
+        <button class="reader-link" @click="router.push(`/book/${bookId}`)">返回详情</button>
 
-    <!-- 阅读区域 -->
-    <div v-else-if="chapter" class="max-w-3xl mx-auto px-6 py-12">
-      <!-- 章节标题 -->
-      <div class="text-center mb-12">
-        <h1 class="text-2xl font-bold mb-2" :class="textClass">{{ chapter.title }}</h1>
-        <div class="flex items-center justify-center space-x-4 text-sm" :class="subTextClass">
-          <button
-            v-if="chapter.prev_chapter"
-            class="hover:text-indigo-500 transition-colors"
-            @click="goToChapter(chapter.prev_chapter)"
-          >
-            上一章
+        <div class="reader-header__center">
+          <p class="reader-header__eyebrow">{{ book?.title || '沉浸式阅读' }}</p>
+          <h1>{{ chapter?.title || '正在载入章节…' }}</h1>
+        </div>
+
+        <div class="reader-header__actions">
+          <button class="reader-link" @click="toggleChat">{{ chatOpen ? '收起 AI' : '打开 AI' }}</button>
+          <button class="reader-link" @click="openShelfOrLogin">
+            {{ authStore.isAuthenticated ? '我的书架' : '登录' }}
           </button>
-          <span v-else class="text-gray-300">已是第一章</span>
-          <span>|</span>
-          <button
-            v-if="chapter.next_chapter"
-            class="hover:text-indigo-500 transition-colors"
-            @click="goToChapter(chapter.next_chapter)"
-          >
-            下一章
-          </button>
-          <span v-else class="text-gray-300">已是最后一章</span>
         </div>
       </div>
+    </header>
 
-      <!-- 正文内容 -->
-      <div
-        class="leading-loose whitespace-pre-wrap"
-        :class="[textClass, contentClass]"
-        :style="{ fontSize: readerStore.fontSize + 'px' }"
-      >
-        {{ chapter.content }}
-      </div>
+    <main class="reader-main page-shell" :class="{ 'reader-main--chat-open': chatOpen }">
+      <div v-if="loading" class="reader-status">正在加载阅读内容…</div>
 
-      <!-- 底部导航 -->
-      <div class="flex items-center justify-between mt-16 pt-8 border-t" :class="borderClass">
-        <button
-          v-if="chapter.prev_chapter"
-          class="px-6 py-2 rounded-lg border transition-colors"
-          :class="btnClass"
-          @click="goToChapter(chapter.prev_chapter)"
-        >
-          上一章
-        </button>
-        <span v-else></span>
-        <button
-          class="px-6 py-2 rounded-lg border transition-colors"
-          :class="btnClass"
-          @click="$router.push(`/book/${bookId}`)"
-        >
-          目录
-        </button>
-        <button
-          v-if="chapter.next_chapter"
-          class="px-6 py-2 rounded-lg border transition-colors"
-          :class="btnClass"
-          @click="goToChapter(chapter.next_chapter)"
-        >
-          下一章
-        </button>
-        <span v-else></span>
-      </div>
-    </div>
+      <template v-else-if="book && chapter">
+        <section class="reader-scene">
+          <div class="reader-scene__intro">
+            <p class="section-eyebrow">IMMERSIVE READER</p>
+            <h2>{{ chapter.title }}</h2>
+            <p class="reader-scene__copy">
+              {{ chapterLead }}
+            </p>
+          </div>
 
-    <!-- 右侧悬浮工具栏 -->
-    <div class="fixed right-4 top-1/2 -translate-y-1/2 flex flex-col space-y-3 z-30">
-      <button
-        class="w-10 h-10 rounded-full bg-white shadow-md flex items-center justify-center hover:shadow-lg transition-shadow"
-        title="目录"
-        @click="$router.push(`/book/${bookId}`)"
-      >
-        <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-        </svg>
-      </button>
-      <button
-        class="w-10 h-10 rounded-full bg-white shadow-md flex items-center justify-center hover:shadow-lg transition-shadow"
-        title="字体大小"
-        @click="toggleFontSize"
-      >
-        <span class="text-xs font-bold text-gray-600">A</span>
-      </button>
-      <button
-        class="w-10 h-10 rounded-full bg-white shadow-md flex items-center justify-center hover:shadow-lg transition-shadow"
-        title="切换主题"
-        @click="readerStore.toggleTheme()"
-      >
-        <svg v-if="readerStore.theme === 'light'" class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-        </svg>
-        <svg v-else-if="readerStore.theme === 'dark'" class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-        </svg>
-        <svg v-else class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-        </svg>
-      </button>
-    </div>
+          <div class="reader-scene__meta">
+            <div>
+              <span>分类</span>
+              <strong>{{ book.category }}</strong>
+            </div>
+            <div>
+              <span>作者</span>
+              <strong>{{ book.author }}</strong>
+            </div>
+            <div>
+              <span>章节</span>
+              <strong>{{ chapter.chapterNumber }} / {{ chapters.length }}</strong>
+            </div>
+            <div>
+              <span>进度</span>
+              <strong>{{ chapterProgress }}%</strong>
+            </div>
+          </div>
+        </section>
 
-    <!-- AI 助手 -->
-    <AiChatPanel :book-id="bookId" :chapter-id="chapterId" />
+        <section class="reader-tools">
+          <div class="reader-tools__group">
+            <span class="reader-tools__label">阅读主题</span>
+            <button
+              v-for="option in themeOptions"
+              :key="option.value"
+              class="tool-chip"
+              :class="{ 'tool-chip--active': normalizedTheme === option.value }"
+              @click="readerStore.setTheme(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+
+          <div class="reader-tools__group">
+            <span class="reader-tools__label">字号</span>
+            <button class="tool-chip" @click="readerStore.decreaseFontSize()">A-</button>
+            <span class="reader-tools__value">{{ readerStore.fontSize }}px</span>
+            <button class="tool-chip" @click="readerStore.increaseFontSize()">A+</button>
+          </div>
+
+          <div class="reader-tools__group reader-tools__group--progress">
+            <span class="reader-tools__label">阅读进度</span>
+            <div class="reader-progress">
+              <span :style="{ width: `${chapterProgress}%` }"></span>
+            </div>
+            <strong>第 {{ chapter.chapterNumber }} 章</strong>
+          </div>
+        </section>
+
+        <article class="reader-article">
+          <div class="reader-article__meta">
+            <span>{{ book.category }}</span>
+            <span>{{ book.author }}</span>
+            <span>{{ formatWordCount(chapter.wordCount) }}</span>
+          </div>
+
+          <div class="reader-article__content" :style="{ fontSize: `${readerStore.fontSize}px` }">
+            <p v-for="(paragraph, index) in paragraphs" :key="`${chapter.id}-${index}`">
+              {{ paragraph }}
+            </p>
+          </div>
+
+          <div class="reader-nav">
+            <button class="reader-nav__btn" :disabled="!chapter.prevChapter" @click="goToChapter(chapter.prevChapter)">
+              上一章
+            </button>
+            <button class="reader-nav__btn reader-nav__btn--ghost" @click="router.push(`/book/${bookId}`)">
+              返回目录
+            </button>
+            <button class="reader-nav__btn" :disabled="!chapter.nextChapter" @click="goToChapter(chapter.nextChapter)">
+              下一章
+            </button>
+          </div>
+        </article>
+      </template>
+
+      <div v-else class="reader-status">章节不存在或暂时无法读取。</div>
+    </main>
+
+    <AiChatPanel
+      v-model:open="chatOpen"
+      :book-id="bookId"
+      :chapter-id="chapter?.id"
+      :book-title="book?.title"
+      :chapter-title="chapter?.title"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getChapterContent } from '@/api'
-import { useReaderStore } from '@/stores/reader'
-import { useBookshelfStore } from '@/stores/bookshelf'
 import AiChatPanel from '@/components/AiChatPanel.vue'
+import { useAuthStore } from '@/stores/auth'
+import { useBookshelfStore } from '@/stores/bookshelf'
+import { useReaderStore } from '@/stores/reader'
+import { fetchReaderBundle } from '@/services/library'
+import type { LibraryBook, LibraryChapter, LibraryChapterDetail } from '@/data/mockLibrary'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 const readerStore = useReaderStore()
 const bookshelfStore = useBookshelfStore()
 
-const bookId = Number(route.params.bookId)
-const chapterNum = Number(route.params.chapterNum)
-const chapterId = ref<number | undefined>(undefined)
+const bookId = computed(() => Number(route.params.bookId))
+const chapterNumber = computed(() => Number(route.params.chapterNum))
 
 const loading = ref(true)
-const chapter = ref<any>(null)
+const book = ref<LibraryBook | null>(null)
+const chapters = ref<LibraryChapter[]>([])
+const chapter = ref<LibraryChapterDetail | null>(null)
 
-// 主题样式
-const themeClasses = computed(() => {
-  switch (readerStore.theme) {
-    case 'dark':
-      return 'bg-gray-900'
-    case 'sepia':
-      return 'bg-amber-50'
+const themeOptions = [
+  { value: 'eye' as const, label: '护眼' },
+  { value: 'paper' as const, label: '羊皮纸' },
+  { value: 'night' as const, label: '夜间' },
+]
+
+const chatOpen = computed({
+  get: () => readerStore.sidebarOpen,
+  set: (value: boolean) => readerStore.setSidebarOpen(value),
+})
+
+const normalizedTheme = computed<'eye' | 'paper' | 'night'>(() => {
+  if (readerStore.theme === 'light') return 'eye'
+  if (readerStore.theme === 'sepia') return 'paper'
+  if (readerStore.theme === 'dark') return 'night'
+  return readerStore.theme as 'eye' | 'paper' | 'night'
+})
+
+const readerCssVars = computed(() => {
+  switch (normalizedTheme.value) {
+    case 'night':
+      return {
+        '--reader-bg': '#121419',
+        '--reader-panel': 'rgba(24, 27, 33, 0.82)',
+        '--reader-card': 'rgba(18, 21, 26, 0.92)',
+        '--reader-text': '#d9dce3',
+        '--reader-muted': '#98a1b1',
+        '--reader-border': 'rgba(120, 138, 164, 0.16)',
+        '--reader-progress': '#aab6ff',
+      }
+    case 'eye':
+      return {
+        '--reader-bg': '#eaf2e2',
+        '--reader-panel': 'rgba(244, 249, 238, 0.88)',
+        '--reader-card': 'rgba(253, 255, 249, 0.96)',
+        '--reader-text': '#274237',
+        '--reader-muted': '#647a6e',
+        '--reader-border': 'rgba(101, 124, 112, 0.14)',
+        '--reader-progress': '#5d8f6d',
+      }
     default:
-      return 'bg-white'
+      return {
+        '--reader-bg': '#f4ebdf',
+        '--reader-panel': 'rgba(252, 245, 237, 0.84)',
+        '--reader-card': 'rgba(255, 251, 246, 0.96)',
+        '--reader-text': '#34251d',
+        '--reader-muted': '#816557',
+        '--reader-border': 'rgba(132, 98, 78, 0.14)',
+        '--reader-progress': '#8c3f2c',
+      }
   }
 })
 
-const textClass = computed(() => {
-  switch (readerStore.theme) {
-    case 'dark':
-      return 'text-gray-200'
-    case 'sepia':
-      return 'text-amber-900'
-    default:
-      return 'text-gray-800'
-  }
+const chapterProgress = computed(() => {
+  if (!chapter.value || chapters.value.length === 0) return 0
+  return Math.round((chapter.value.chapterNumber / chapters.value.length) * 100)
 })
 
-const subTextClass = computed(() => {
-  switch (readerStore.theme) {
-    case 'dark':
-      return 'text-gray-500'
-    case 'sepia':
-      return 'text-amber-700'
-    default:
-      return 'text-gray-400'
-  }
+const paragraphs = computed(() => {
+  const content = chapter.value?.content || ''
+  return content
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean)
 })
 
-const borderClass = computed(() => {
-  switch (readerStore.theme) {
-    case 'dark':
-      return 'border-gray-700'
-    case 'sepia':
-      return 'border-amber-200'
-    default:
-      return 'border-gray-200'
-  }
-})
+const chapterLead = computed(() => paragraphs.value[0] || book.value?.description || '故事正在缓慢展开。')
 
-const btnClass = computed(() => {
-  switch (readerStore.theme) {
-    case 'dark':
-      return 'border-gray-700 text-gray-300 hover:bg-gray-800'
-    case 'sepia':
-      return 'border-amber-200 text-amber-800 hover:bg-amber-100'
-    default:
-      return 'border-gray-200 text-gray-600 hover:bg-gray-50'
-  }
-})
-
-const contentClass = computed(() => {
-  switch (readerStore.theme) {
-    case 'dark':
-      return 'text-gray-300'
-    case 'sepia':
-      return 'text-amber-800'
-    default:
-      return 'text-gray-700'
-  }
-})
-
-function toggleFontSize() {
-  const sizes = [16, 18, 20, 22, 24]
-  const idx = sizes.indexOf(readerStore.fontSize)
-  readerStore.fontSize = sizes[(idx + 1) % sizes.length]
+function formatWordCount(value: number) {
+  if (value >= 10000) return `${(value / 10000).toFixed(value >= 100000 ? 0 : 1)}万字`
+  return `${value}字`
 }
 
-async function loadChapter(bookId: number, chapterNum: number) {
+function toggleChat() {
+  chatOpen.value = !chatOpen.value
+}
+
+function openShelfOrLogin() {
+  if (authStore.isAuthenticated) {
+    router.push('/bookshelf')
+    return
+  }
+
+  router.push({
+    path: '/login',
+    query: { redirect: route.fullPath },
+  })
+}
+
+function goToChapter(target?: number | null) {
+  if (!target) return
+  router.push(`/read/${bookId.value}/${target}`)
+}
+
+async function loadReader() {
   loading.value = true
   try {
-    const { data } = await getChapterContent(bookId, chapterNum)
-    chapter.value = data
-    chapterId.value = data.id
-    readerStore.setBook(bookId)
-    readerStore.setChapter(chapterNum)
-
-    // 更新阅读进度
-    bookshelfStore.updateProgress(bookId, chapterNum, 0)
-  } catch (e) {
-    console.error('加载章节失败:', e)
+    const bundle = await fetchReaderBundle(bookId.value, chapterNumber.value)
+    book.value = bundle.book
+    chapters.value = bundle.chapters
+    chapter.value = bundle.chapter
+    readerStore.setBook(bundle.book.id)
+    readerStore.setChapter(bundle.chapter.chapterNumber)
+    await bookshelfStore.updateProgress(bundle.book.id, bundle.chapter.chapterNumber, chapterProgress.value, {
+      title: bundle.book.title,
+      author: bundle.book.author,
+      cover_url: bundle.book.coverUrl || '',
+    })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   } finally {
     loading.value = false
   }
 }
 
-function goToChapter(num: number) {
-  router.push(`/read/${bookId}/${num}`)
-}
+onMounted(loadReader)
 
-// 监听路由参数变化
 watch(
   () => [route.params.bookId, route.params.chapterNum],
-  ([newBookId, newChapterNum]) => {
-    if (newBookId && newChapterNum) {
-      loadChapter(Number(newBookId), Number(newChapterNum))
-    }
-  }
+  () => {
+    loadReader()
+  },
 )
-
-onMounted(() => {
-  loadChapter(bookId, chapterNum)
-})
 </script>
+
+<style scoped>
+.reader-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--reader-progress) 18%, transparent), transparent 26%),
+    linear-gradient(180deg, var(--reader-bg) 0%, color-mix(in srgb, var(--reader-bg) 88%, #ffffff 12%) 100%);
+  color: var(--reader-text);
+}
+
+.page-shell {
+  width: min(1160px, calc(100vw - 32px));
+  margin: 0 auto;
+}
+
+.reader-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  border-bottom: 1px solid var(--reader-border);
+  background: color-mix(in srgb, var(--reader-panel) 96%, transparent);
+  backdrop-filter: blur(20px);
+}
+
+.reader-header__inner {
+  display: grid;
+  min-height: 80px;
+  grid-template-columns: 160px minmax(0, 1fr) 260px;
+  align-items: center;
+  gap: 16px;
+}
+
+.reader-header__center {
+  text-align: center;
+}
+
+.reader-header__eyebrow,
+.section-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--reader-muted);
+}
+
+.reader-header__center h1 {
+  margin: 8px 0 0;
+  font-family: 'Iowan Old Style', 'Songti SC', serif;
+  font-size: clamp(1.24rem, 2.3vw, 2rem);
+  line-height: 1.24;
+}
+
+.reader-header__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.reader-link,
+.tool-chip,
+.reader-nav__btn {
+  border: 1px solid var(--reader-border);
+  background: color-mix(in srgb, var(--reader-panel) 86%, white 14%);
+  color: var(--reader-text);
+}
+
+.reader-link {
+  border-radius: 999px;
+  padding: 10px 16px;
+}
+
+.reader-main {
+  display: grid;
+  gap: 22px;
+  padding: 28px 0 52px;
+  transition: padding-right 0.3s ease;
+}
+
+.reader-status,
+.reader-scene,
+.reader-tools,
+.reader-article {
+  border: 1px solid var(--reader-border);
+  border-radius: 30px;
+  background: var(--reader-panel);
+  box-shadow: 0 24px 60px rgba(36, 25, 18, 0.08);
+}
+
+.reader-status {
+  padding: 28px;
+  color: var(--reader-muted);
+}
+
+.reader-scene {
+  display: grid;
+  gap: 22px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
+  padding: 28px;
+}
+
+.reader-scene__intro h2 {
+  margin: 12px 0 0;
+  font-family: 'Iowan Old Style', 'Songti SC', serif;
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 1.06;
+}
+
+.reader-scene__copy {
+  margin: 18px 0 0;
+  max-width: 50rem;
+  line-height: 1.95;
+  color: var(--reader-muted);
+}
+
+.reader-scene__meta {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.reader-scene__meta div {
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--reader-card) 92%, transparent);
+  padding: 18px;
+}
+
+.reader-scene__meta span {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--reader-muted);
+}
+
+.reader-scene__meta strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 20px;
+}
+
+.reader-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px 24px;
+  padding: 18px 24px;
+}
+
+.reader-tools__group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.reader-tools__group--progress {
+  margin-left: auto;
+}
+
+.reader-tools__label {
+  font-size: 13px;
+  color: var(--reader-muted);
+}
+
+.tool-chip {
+  border-radius: 999px;
+  padding: 8px 14px;
+}
+
+.tool-chip--active {
+  border-color: color-mix(in srgb, var(--reader-progress) 36%, transparent);
+  background: color-mix(in srgb, var(--reader-progress) 18%, var(--reader-panel) 82%);
+}
+
+.reader-tools__value {
+  min-width: 48px;
+  text-align: center;
+}
+
+.reader-progress {
+  height: 8px;
+  width: clamp(160px, 16vw, 260px);
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-border) 70%, transparent);
+}
+
+.reader-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--reader-progress) 78%, white 22%), var(--reader-progress));
+}
+
+.reader-article {
+  max-width: 860px;
+  margin: 0 auto;
+  background: var(--reader-card);
+  padding: 34px clamp(22px, 4vw, 56px);
+}
+
+.reader-article__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--reader-muted);
+}
+
+.reader-article__content {
+  margin-top: 24px;
+  line-height: 2;
+  font-family: 'Iowan Old Style', 'Songti SC', serif;
+  letter-spacing: 0.02em;
+}
+
+.reader-article__content p {
+  margin: 0;
+  text-indent: 2em;
+}
+
+.reader-article__content p + p {
+  margin-top: 1.3em;
+}
+
+.reader-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 34px;
+}
+
+.reader-nav__btn {
+  min-width: 132px;
+  border-radius: 999px;
+  padding: 12px 18px;
+}
+
+.reader-nav__btn--ghost {
+  flex: 1;
+}
+
+.reader-nav__btn:disabled {
+  opacity: 0.42;
+}
+
+@media (min-width: 1180px) {
+  .reader-shell--chat-open .reader-main {
+    padding-right: min(26vw, 360px);
+  }
+}
+
+@media (max-width: 900px) {
+  .reader-header__inner {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding: 14px 0;
+  }
+
+  .reader-header__actions {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .reader-scene {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-tools__group--progress {
+    margin-left: 0;
+  }
+
+  .reader-progress {
+    width: min(100%, 220px);
+  }
+}
+
+@media (max-width: 720px) {
+  .page-shell {
+    width: min(calc(100vw - 24px), 100%);
+  }
+
+  .reader-main {
+    gap: 16px;
+    padding: 18px 0 40px;
+  }
+
+  .reader-scene,
+  .reader-tools,
+  .reader-article {
+    border-radius: 24px;
+  }
+
+  .reader-scene,
+  .reader-tools,
+  .reader-article {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .reader-article {
+    padding-top: 24px;
+    padding-bottom: 24px;
+  }
+
+  .reader-nav__btn,
+  .reader-nav__btn--ghost {
+    width: 100%;
+  }
+}
+</style>

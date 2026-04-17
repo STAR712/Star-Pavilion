@@ -22,6 +22,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(50), unique=True, nullable=False)
+    password_hash = Column(String(255), default="")
     avatar = Column(String(255), default="")
     role = Column(String(20), default="reader")  # reader / author / admin
     created_at = Column(DateTime, server_default=func.now())

@@ -6,29 +6,69 @@ import os
 import re
 from typing import AsyncGenerator, Optional
 
+import httpx
+from database import SessionLocal
 from langchain_chroma import Chroma
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from models import Book, Chapter
 
 from config import settings
 
 
-class XfyunEmbeddings(OpenAIEmbeddings):
-    """讯飞星辰 Embeddings，继承 OpenAIEmbeddings 并移除 encoding_format 参数"""
+class XfyunEmbeddings(Embeddings):
+    """讯飞星辰 Embeddings，手动调用兼容接口以避免 SDK 自动注入不支持的字段。"""
 
-    def _get_headers(self) -> dict:
-        headers = super()._get_headers()
-        return headers
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+        timeout: float = 60.0,
+    ) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+
+    def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
+        response = httpx.post(
+            f"{self.base_url}/embeddings",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.model,
+                "input": texts,
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get("data") or []
+        if not isinstance(items, list) or not items:
+            raise ValueError(f"embedding 响应格式异常: {payload}")
+        return [item.get("embedding", []) for item in items]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        return self._request_embeddings(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._request_embeddings([text])[0]
 
 
 class RAGService:
     def __init__(self):
         self.embeddings = XfyunEmbeddings(
-            openai_api_key=settings.openai_api_key,
-            openai_api_base=settings.openai_base_url,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
             model=settings.embed_model,
         )
         self.llm = ChatOpenAI(
@@ -77,6 +117,62 @@ class RAGService:
             persist_directory=self.chroma_dir,
         )
 
+    def _get_direct_chapter_context(
+        self,
+        book_id: Optional[int],
+        chapter_id: Optional[int],
+        search_all: bool,
+    ) -> str:
+        """直接从数据库读取章节正文，作为未向量化时的兜底上下文。"""
+        if book_id is None:
+            return ""
+
+        db = SessionLocal()
+        try:
+            current_chapter = None
+            if chapter_id is not None:
+                current_chapter = (
+                    db.query(Chapter)
+                    .filter(Chapter.id == chapter_id, Chapter.book_id == book_id)
+                    .first()
+                )
+
+            if current_chapter is None:
+                current_chapter = (
+                    db.query(Chapter)
+                    .filter(Chapter.book_id == book_id)
+                    .order_by(Chapter.chapter_number.asc())
+                    .first()
+                )
+
+            if current_chapter is None:
+                return ""
+
+            snippets = [current_chapter]
+            if not search_all:
+                previous = (
+                    db.query(Chapter)
+                    .filter(
+                        Chapter.book_id == book_id,
+                        Chapter.chapter_number < current_chapter.chapter_number,
+                    )
+                    .order_by(Chapter.chapter_number.desc())
+                    .first()
+                )
+                if previous is not None:
+                    snippets.insert(0, previous)
+
+            context_parts = []
+            for chapter in snippets:
+                excerpt = chapter.content[:800].strip()
+                context_parts.append(
+                    f"【{chapter.title}】\n{excerpt}"
+                )
+
+            return "\n\n".join(context_parts)
+        finally:
+            db.close()
+
     # ==================== 索引方法 ====================
 
     def index_chapter(
@@ -105,7 +201,6 @@ class RAGService:
                     "chapter_title": title,
                     "chunk_type": "paragraph",
                     "chunk_index": i,
-                    "user_id": 1,  # 小说内容是全局共享的，使用默认值
                 }
             )
 
@@ -118,7 +213,6 @@ class RAGService:
                     "chapter_title": title,
                     "chunk_type": "plot",
                     "chunk_index": i,
-                    "user_id": 1,  # 小说内容是全局共享的，使用默认值
                 }
             )
 
@@ -153,9 +247,6 @@ class RAGService:
             filters = {}
             if max_chapter_id is not None:
                 filters["chapter_id"] = {"$le": max_chapter_id}
-            if user_id is not None:
-                filters["user_id"] = user_id
-
             if filters:
                 results = chroma.similarity_search(query, k=top_k, filter=filters)
             else:
@@ -280,6 +371,7 @@ class RAGService:
         system_prompt = "你是一个智能小说阅读助手，可以帮助读者理解小说内容、分析人物关系、预测剧情走向。请用简洁易懂的语言回答问题。"
 
         # 如果有 book_id，检索相关上下文
+        search_results = []
         if book_id and messages:
             last_user_msg = ""
             for msg in reversed(messages):
@@ -304,6 +396,22 @@ class RAGService:
                     context_text = "\n\n".join(context_parts)
                     system_prompt += (
                         f"\n\n以下是小说中的相关内容，请参考回答：\n\n{context_text}"
+                    )
+
+        if book_id:
+            direct_context = self._get_direct_chapter_context(
+                book_id=book_id,
+                chapter_id=chapter_id,
+                search_all=search_all,
+            )
+            if direct_context:
+                if search_results:
+                    system_prompt += (
+                        f"\n\n当前阅读的章节摘要如下，可作为补充上下文：\n\n{direct_context}"
+                    )
+                else:
+                    system_prompt += (
+                        f"\n\n以下是当前阅读到的章节内容，请优先依据这些内容回答：\n\n{direct_context}"
                     )
 
         # 如果有 conversation_id，检索相关历史对话记忆
@@ -393,6 +501,60 @@ class RAGService:
         except Exception as e:
             yield f"[错误] 对话服务暂时不可用: {str(e)}"
 
+    def sync_book_to_chroma(
+        self,
+        db_session,
+        book_id: int,
+        force_reindex: bool = False,
+    ) -> bool:
+        book = db_session.query(Book).filter(Book.id == book_id).first()
+        if book is None or not book.chapters:
+            return False
 
-# 全局 RAG 服务实例
-rag_service = RAGService()
+        chroma = self._get_chroma(book_id)
+        should_reindex = force_reindex or not book.vectorized or any(
+            not chapter.vectorized for chapter in book.chapters
+        )
+        if not should_reindex:
+            return False
+
+        try:
+            chroma.delete_collection()
+        except Exception:
+            pass
+
+        chapters_data = [
+            {"id": chapter.id, "title": chapter.title, "content": chapter.content}
+            for chapter in book.chapters
+        ]
+        self.index_book(book_id, chapters_data)
+        book.vectorized = True
+        for chapter in book.chapters:
+            chapter.vectorized = True
+        db_session.commit()
+        return True
+
+
+_rag_service: RAGService | None = None
+
+
+def get_rag_service() -> RAGService:
+    """Lazily create the RAG service so API boot is not blocked by chat config."""
+    global _rag_service
+    if _rag_service is None:
+        _rag_service = RAGService()
+    return _rag_service
+
+
+def ensure_library_vectorized(db_session, force: bool = False) -> int:
+    rag_service = get_rag_service()
+    books = db_session.query(Book).order_by(Book.id.asc()).all()
+    processed = 0
+    for book in books:
+        if rag_service.sync_book_to_chroma(
+            db_session,
+            book.id,
+            force_reindex=force,
+        ):
+            processed += 1
+    return processed

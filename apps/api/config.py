@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     model_name: str = "xop35qwen2b"
     embed_model: str = "sde0a5839"
     api_key: str = "test_api_key_123456"
+    auth_secret: str = "star-pavilion-auth-secret"
     database_url: str = "sqlite:///./novel.db"
     chroma_dir: str = "./chroma_db"
     default_user_id: int = 1

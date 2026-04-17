@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Book, Chapter
+from services.rag_service import ensure_library_vectorized, get_rag_service
 
 router = APIRouter(prefix="/books", tags=["书籍"])
 
@@ -249,19 +250,12 @@ def create_chapter(
 
     # 触发向量化
     try:
-        from services.rag_service import rag_service
-
-        rag_service.index_chapter(
-            book_id=book_id,
-            chapter_id=chapter.id,
-            title=req.title,
-            content=req.content,
-        )
-        chapter.vectorized = True
-        book.vectorized = True
+        chapter.vectorized = False
+        book.vectorized = False
         # 更新总字数
         book.word_count = sum(c.word_count for c in book.chapters)
         db.commit()
+        ensure_library_vectorized(db)
     except Exception as e:
         print(f"向量化失败（不影响章节保存）: {e}")
 
@@ -329,23 +323,14 @@ def vectorize_book(book_id: int, db: Session = Depends(get_db)):
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
 
-    from services.rag_service import rag_service
-
-    chapters_data = [
-        {"id": c.id, "title": c.title, "content": c.content}
-        for c in book.chapters
-    ]
-    if not chapters_data:
+    if not book.chapters:
         raise HTTPException(status_code=400, detail="该书籍暂无章节")
 
     try:
-        rag_service.index_book(book_id, chapters_data)
-        book.vectorized = True
-        for c in book.chapters:
-            c.vectorized = True
-        db.commit()
+        rag_service = get_rag_service()
+        rag_service.sync_book_to_chroma(db, book_id, force_reindex=True)
         return {
-            "message": f"向量化完成，共处理 {len(chapters_data)} 个章节"
+            "message": f"向量化完成，共处理 {len(book.chapters)} 个章节"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"向量化失败: {str(e)}")

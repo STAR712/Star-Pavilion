@@ -1,12 +1,48 @@
 import axios from 'axios'
 
+export const AUTH_TOKEN_KEY = 'star-pavilion-auth-token'
+
 const api = axios.create({
   baseURL: '',
   timeout: 10000,
-  headers: {
-    'Authorization': 'Bearer test_api_key_123456'
-  }
 })
+
+export function getStoredToken() {
+  if (typeof window === 'undefined') return ''
+  return window.localStorage.getItem(AUTH_TOKEN_KEY) || ''
+}
+
+export function setAuthToken(token: string) {
+  if (typeof window === 'undefined') return
+  if (token) {
+    window.localStorage.setItem(AUTH_TOKEN_KEY, token)
+  } else {
+    window.localStorage.removeItem(AUTH_TOKEN_KEY)
+  }
+}
+
+export function clearAuthToken() {
+  setAuthToken('')
+}
+
+api.interceptors.request.use((config) => {
+  const token = getStoredToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  } else if (config.headers?.Authorization) {
+    delete config.headers.Authorization
+  }
+  return config
+})
+
+// 用户系统
+export const login = (payload: { username: string; password: string }) =>
+  api.post('/api/auth/login', payload)
+
+export const register = (payload: { username: string; password: string }) =>
+  api.post('/api/auth/register', payload)
+
+export const getMe = () => api.get('/api/auth/me')
 
 // 获取书籍列表
 export const getBooks = (params?: { category?: string; page?: number; size?: number }) =>
@@ -36,14 +72,25 @@ export const updateProgress = (bookId: number, chapter: number, progress: number
 export const removeFromBookshelf = (bookId: number) => api.delete(`/api/bookshelf/${bookId}`)
 
 // SSE 流式对话
-export const streamChat = (messages: Array<{role: string; content: string}>, bookId?: number, chapterId?: number, searchAll: boolean = true) => {
+export const streamChat = (
+  messages: Array<{ role: string; content: string }>,
+  bookId?: number,
+  chapterId?: number,
+  allowSpoiler: boolean = false,
+) => {
+  const token = getStoredToken()
   return fetch('/api/chat/stream', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer test_api_key_123456'
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ messages, book_id: bookId, chapter_id: chapterId, search_all: searchAll })
+    body: JSON.stringify({
+      messages,
+      book_id: bookId,
+      chapter_id: chapterId,
+      search_all: allowSpoiler,
+    }),
   })
 }
 
