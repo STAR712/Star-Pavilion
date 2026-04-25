@@ -1,22 +1,26 @@
 """
 RAG 服务 - 使用 ChromaDB 存储小说向量，支持双层分块、流式对话和对话记忆
+模块化架构：
+  - chunking.py: 文本分块
+  - retrieval.py: 混合检索 + 重排序
+  - memory.py: 对话记忆 + 分层摘要
+  - generation.py: 流式生成 + System Prompt 构建
 """
 
 import os
-import re
 from typing import AsyncGenerator, Optional
 
-import httpx
 from database import SessionLocal
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from models import Book, Chapter
 
 from config import settings
+from services.chunking import dual_layer_chunk
+from services.generation import build_sliding_window_messages, build_system_prompt
+from services.memory import ConversationMemory
+from services.retrieval import extract_keywords, hybrid_search
 
 
 class XfyunEmbeddings(Embeddings):
@@ -36,6 +40,7 @@ class XfyunEmbeddings(Embeddings):
         self.timeout = timeout
 
     def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
+        import httpx
         response = httpx.post(
             f"{self.base_url}/embeddings",
             headers={
@@ -48,12 +53,18 @@ class XfyunEmbeddings(Embeddings):
             },
             timeout=self.timeout,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"讯飞 Embedding 接口调用失败: {response.status_code} {response.text}"
+            )
         payload = response.json()
         items = payload.get("data") or []
         if not isinstance(items, list) or not items:
             raise ValueError(f"embedding 响应格式异常: {payload}")
-        return [item.get("embedding", []) for item in items]
+        vectors = [item.get("embedding", []) for item in items]
+        if any(not vector for vector in vectors):
+            raise ValueError(f"embedding 返回空向量: {payload}")
+        return vectors
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -67,32 +78,19 @@ class XfyunEmbeddings(Embeddings):
 class RAGService:
     def __init__(self):
         self.embeddings = XfyunEmbeddings(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            model=settings.embed_model,
+            api_key=settings.xfyun_api_key,
+            base_url=settings.xfyun_base_url,
+            model=settings.xfyun_embedding_model,
         )
         self.llm = ChatOpenAI(
-            openai_api_key=settings.openai_api_key,
-            openai_api_base=settings.openai_base_url,
-            model=settings.model_name,
+            openai_api_key=settings.xfyun_api_key,
+            openai_api_base=settings.xfyun_base_url,
+            model=settings.xfyun_chat_model,
             streaming=True,
             temperature=0.7,
         )
         self.chroma_dir = settings.chroma_dir
         os.makedirs(self.chroma_dir, exist_ok=True)
-        # 章节段落级分块器
-        self.paragraph_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
-            separators=["\n\n", "\n", "。", "！", "？", "；", ""],
-        )
-        # 关键剧情点级分块器
-        self.plot_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=100,
-            separators=["\n\n", "\n", "。", ""],
-        )
-        # 滑动窗口大小：保留最近 N 轮原文
         self.window_size = 8
 
     # ==================== ChromaDB 基础方法 ====================
@@ -115,6 +113,13 @@ class RAGService:
             collection_name="conversation_memory",
             embedding_function=self.embeddings,
             persist_directory=self.chroma_dir,
+        )
+
+    def _get_memory_manager(self) -> ConversationMemory:
+        """获取对话记忆管理器"""
+        return ConversationMemory(
+            memory_collection=self._get_memory_collection(),
+            llm=self.llm,
         )
 
     def _get_direct_chapter_context(
@@ -178,43 +183,31 @@ class RAGService:
     def index_chapter(
         self, book_id: int, chapter_id: int, title: str, content: str
     ):
-        """
-        双层分块索引章节内容：
-        1. 段落级分块（细粒度，用于精确检索）
-        2. 剧情点级分块（粗粒度，用于上下文理解）
-        """
-        # 段落级分块
-        paragraph_chunks = self.paragraph_splitter.split_text(content)
-        # 剧情点级分块
-        plot_chunks = self.plot_splitter.split_text(content)
+        """双层分块索引章节内容"""
+        paragraph_chunks, plot_chunks = dual_layer_chunk(content)
 
-        # 合并所有分块，带元数据标记
         all_texts = []
         all_metadatas = []
 
         for i, chunk in enumerate(paragraph_chunks):
             all_texts.append(chunk)
-            all_metadatas.append(
-                {
-                    "book_id": book_id,
-                    "chapter_id": chapter_id,
-                    "chapter_title": title,
-                    "chunk_type": "paragraph",
-                    "chunk_index": i,
-                }
-            )
+            all_metadatas.append({
+                "book_id": book_id,
+                "chapter_id": chapter_id,
+                "chapter_title": title,
+                "chunk_type": "paragraph",
+                "chunk_index": i,
+            })
 
         for i, chunk in enumerate(plot_chunks):
             all_texts.append(chunk)
-            all_metadatas.append(
-                {
-                    "book_id": book_id,
-                    "chapter_id": chapter_id,
-                    "chapter_title": title,
-                    "chunk_type": "plot",
-                    "chunk_index": i,
-                }
-            )
+            all_metadatas.append({
+                "book_id": book_id,
+                "chapter_id": chapter_id,
+                "chapter_title": title,
+                "chunk_type": "plot",
+                "chunk_index": i,
+            })
 
         if all_texts:
             chroma = self._get_chroma(book_id)
@@ -240,24 +233,23 @@ class RAGService:
         max_chapter_id: int | None = None,
         user_id: int | None = None,
     ) -> list[dict]:
-        """检索相关文本片段，可通过 max_chapter_id 限制只检索当前章节及之前的内容"""
+        """混合检索：向量相似度 + 关键词过滤 + 重排序"""
         try:
             chroma = self._get_chroma(book_id)
-            # 构建 ChromaDB filter
             filters = {}
             if max_chapter_id is not None:
                 filters["chapter_id"] = {"$le": max_chapter_id}
-            if filters:
-                results = chroma.similarity_search(query, k=top_k, filter=filters)
-            else:
-                results = chroma.similarity_search(query, k=top_k)
-            return [
-                {
-                    "content": doc.page_content,
-                    "metadata": doc.metadata,
-                }
-                for doc in results
-            ]
+
+            # 提取关键词用于混合检索
+            keywords = extract_keywords(query)
+
+            return hybrid_search(
+                chroma=chroma,
+                query=query,
+                query_keywords=keywords,
+                top_k=top_k,
+                filters=filters if filters else None,
+            )
         except Exception:
             return []
 
@@ -272,21 +264,16 @@ class RAGService:
         user_msg: str,
         assistant_msg: str,
     ):
-        """
-        将一轮对话（用户消息+AI回复）向量化存入 ChromaDB 对话记忆
-        存储文本格式为 "用户：{user_msg}\n助手：{assistant_msg}"
-        metadata 包含 {user_id, book_id, conversation_id, turn_index, role}
-        """
-        text = f"用户：{user_msg}\n助手：{assistant_msg}"
-        metadata = {
-            "user_id": user_id,
-            "book_id": book_id,
-            "conversation_id": conversation_id,
-            "turn_index": turn_index,
-            "role": "conversation_turn",
-        }
-        memory_collection = self._get_memory_collection()
-        memory_collection.add_texts(texts=[text], metadatas=[metadata])
+        """存储一轮对话到 ChromaDB"""
+        memory_manager = self._get_memory_manager()
+        memory_manager.store_turn(
+            user_id=user_id,
+            book_id=book_id,
+            conversation_id=conversation_id,
+            turn_index=turn_index,
+            user_msg=user_msg,
+            assistant_msg=assistant_msg,
+        )
 
     def search_conversation_memory(
         self,
@@ -295,55 +282,37 @@ class RAGService:
         book_id: Optional[int] = None,
         top_k: int = 5,
     ) -> list[dict]:
-        """
-        在对话记忆 collection 中做向量相似度检索
-        可按 user_id 和 book_id 过滤
-        """
-        try:
-            memory_collection = self._get_memory_collection()
-            filters = {"user_id": user_id}
-            if book_id is not None:
-                filters["book_id"] = book_id
-            results = memory_collection.similarity_search(
-                query, k=top_k, filter=filters
-            )
-            return [
-                {
-                    "content": doc.page_content,
-                    "metadata": doc.metadata,
-                }
-                for doc in results
-            ]
-        except Exception:
-            return []
+        """检索相关历史对话记忆"""
+        memory_manager = self._get_memory_manager()
+        return memory_manager.search(
+            query=query,
+            user_id=user_id,
+            book_id=book_id,
+            top_k=top_k,
+        )
 
     async def summarize_messages(self, messages: list[dict]) -> str:
-        """
-        调用 LLM 将一组消息压缩为摘要文本（异步）
-        """
-        if not messages:
-            return ""
-        # 构建需要摘要的消息文本
-        msg_texts = []
-        for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            role_label = "用户" if role == "user" else "助手"
-            msg_texts.append(f"{role_label}：{content}")
-        conversation_text = "\n".join(msg_texts)
+        """压缩消息为摘要"""
+        memory_manager = self._get_memory_manager()
+        return await memory_manager.summarize_messages(messages)
 
-        prompt = (
-            "请将以下对话内容压缩为一段简洁的摘要，保留关键信息和上下文。"
-            "摘要应该能让读者理解之前讨论了什么，但不需要包含所有细节。\n\n"
-            f"对话内容：\n{conversation_text}\n\n"
-            "请输出摘要："
-        )
+    # ==================== 向量删除方法 ====================
+
+    def delete_chapter_vectors(self, book_id: int, chapter_id: int):
+        """删除指定章节的向量"""
         try:
-            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
-            return response.content
+            chroma = self._get_chroma(book_id)
+            chroma.delete(where={"chapter_id": chapter_id})
         except Exception:
-            # 摘要失败时返回简单的拼接
-            return conversation_text[:500]
+            pass
+
+    def delete_book_vectors(self, book_id: int):
+        """删除整本书的向量 collection"""
+        try:
+            chroma = self._get_chroma(book_id)
+            chroma.delete_collection()
+        except Exception:
+            pass
 
     # ==================== 流式对话方法 ====================
 
@@ -357,20 +326,12 @@ class RAGService:
         role: Optional[str] = None,
         conversation_id: Optional[int] = None,
     ) -> AsyncGenerator[str | dict, None]:
-        """
-        流式对话方法
-        - 如果提供了 book_id，会先检索相关文本作为上下文
-        - search_all=True 时检索全部章节，False 时只检索当前章节及之前的内容（防剧透）
-        - 如果提供了 conversation_id，会检索相关历史对话记忆作为额外上下文
-        - 实现滑动窗口：保留最近 window_size 轮原文，超出部分压缩为摘要
-        - 使用 LangChain 的流式输出
-        - 返回值同时 yield content (str) 和 memory_stored (dict) 标记
-        """
+        """流式对话方法"""
         uid = user_id if user_id is not None else settings.default_user_id
 
-        system_prompt = "你是一个智能小说阅读助手，可以帮助读者理解小说内容、分析人物关系、预测剧情走向。请用简洁易懂的语言回答问题。"
+        base_prompt = "你是一个智能小说阅读助手，可以帮助读者理解小说内容、分析人物关系、预测剧情走向。请用简洁易懂的语言回答问题。"
 
-        # 如果有 book_id，检索相关上下文
+        # 检索小说内容
         search_results = []
         if book_id and messages:
             last_user_msg = ""
@@ -379,42 +340,23 @@ class RAGService:
                     last_user_msg = msg.get("content", "")
                     break
             if last_user_msg:
-                # search_all=True 检索全部章节，False 只检索当前章节及之前
                 max_chapter = None if search_all else chapter_id
                 search_results = self.search(
                     book_id, last_user_msg, top_k=3,
                     max_chapter_id=max_chapter, user_id=uid,
                 )
-                if search_results:
-                    context_parts = []
-                    for r in search_results:
-                        meta = r["metadata"]
-                        chapter_title = meta.get("chapter_title", "未知章节")
-                        context_parts.append(
-                            f"【{chapter_title}】\n{r['content']}"
-                        )
-                    context_text = "\n\n".join(context_parts)
-                    system_prompt += (
-                        f"\n\n以下是小说中的相关内容，请参考回答：\n\n{context_text}"
-                    )
 
+        # 获取当前章节上下文
+        direct_context = ""
         if book_id:
             direct_context = self._get_direct_chapter_context(
                 book_id=book_id,
                 chapter_id=chapter_id,
                 search_all=search_all,
             )
-            if direct_context:
-                if search_results:
-                    system_prompt += (
-                        f"\n\n当前阅读的章节摘要如下，可作为补充上下文：\n\n{direct_context}"
-                    )
-                else:
-                    system_prompt += (
-                        f"\n\n以下是当前阅读到的章节内容，请优先依据这些内容回答：\n\n{direct_context}"
-                    )
 
-        # 如果有 conversation_id，检索相关历史对话记忆
+        # 检索对话记忆
+        memory_results = []
         if conversation_id and messages:
             last_user_msg = ""
             for msg in reversed(messages):
@@ -428,70 +370,30 @@ class RAGService:
                     book_id=book_id,
                     top_k=3,
                 )
-                if memory_results:
-                    memory_parts = []
-                    for r in memory_results:
-                        meta = r["metadata"]
-                        turn_idx = meta.get("turn_index", "?")
-                        memory_parts.append(
-                            f"[历史对话第{turn_idx}轮]\n{r['content']}"
-                        )
-                    memory_text = "\n\n".join(memory_parts)
-                    system_prompt += (
-                        f"\n\n以下是之前的相关对话记忆，请参考以保持对话连贯性：\n\n{memory_text}"
-                    )
 
-        # 构建带滑动窗口的消息列表
-        # 将 messages 按轮次分组（每轮 = 1个user + 1个assistant）
-        turns = []
-        current_turn = []
-        for msg in messages:
-            current_turn.append(msg)
-            if msg.get("role") == "assistant":
-                turns.append(current_turn)
-                current_turn = []
-        if current_turn:
-            turns.append(current_turn)
+        # 构建 System Prompt（使用 XML 标签）
+        system_prompt = build_system_prompt(
+            base_prompt=base_prompt,
+            search_results=search_results,
+            direct_context=direct_context,
+            memory_results=memory_results,
+            book_id=book_id,
+            has_vector_results=bool(search_results),
+        )
 
-        # 滑动窗口：保留最近 window_size 轮原文
-        if len(turns) > self.window_size:
-            older_turns = turns[:-self.window_size]
-            recent_turns = turns[-self.window_size:]
+        # 分层摘要
+        older_summary = None
+        if conversation_id and messages:
+            memory_manager = self._get_memory_manager()
+            older_summary = await memory_manager.hierarchical_summarize(messages, conversation_id)
 
-            # 压缩旧消息为摘要
-            older_messages = []
-            for turn in older_turns:
-                older_messages.extend(turn)
-            summary = await self.summarize_messages(older_messages)
-
-            # 构建最终消息列表：摘要 + 最近轮次
-            lc_messages = [SystemMessage(content=system_prompt)]
-            if summary:
-                lc_messages.append(
-                    HumanMessage(content=f"[之前的对话摘要]\n{summary}")
-                )
-            for turn in recent_turns:
-                for msg in turn:
-                    msg_role = msg.get("role", "user")
-                    msg_content = msg.get("content", "")
-                    if msg_role == "user":
-                        lc_messages.append(HumanMessage(content=msg_content))
-                    elif msg_role == "assistant":
-                        lc_messages.append(
-                            HumanMessage(content=f"[之前回答] {msg_content}")
-                        )
-        else:
-            # 消息数在窗口内，直接使用
-            lc_messages = [SystemMessage(content=system_prompt)]
-            for msg in messages:
-                msg_role = msg.get("role", "user")
-                msg_content = msg.get("content", "")
-                if msg_role == "user":
-                    lc_messages.append(HumanMessage(content=msg_content))
-                elif msg_role == "assistant":
-                    lc_messages.append(
-                        HumanMessage(content=f"[之前回答] {msg_content}")
-                    )
+        # 构建滑动窗口消息
+        lc_messages = build_sliding_window_messages(
+            messages=messages,
+            system_prompt=system_prompt,
+            window_size=self.window_size,
+            older_summary=older_summary,
+        )
 
         # 流式生成
         try:

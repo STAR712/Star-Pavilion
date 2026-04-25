@@ -1,22 +1,25 @@
+"""认证工具：JWT 双 Token 生成/验证/刷新/黑名单"""
+
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
-import json
 import secrets
-import time
+import uuid
+from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
-from models import User
+from models import TokenBlacklist, User
 
-TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 PBKDF2_ROUNDS = 120_000
 
+
+# ===== 密码哈希（保留原有实现） =====
 
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
@@ -32,7 +35,6 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, stored_hash: str) -> bool:
     if not stored_hash or "$" not in stored_hash:
         return False
-
     salt, digest = stored_hash.split("$", 1)
     candidate = hashlib.pbkdf2_hmac(
         "sha256",
@@ -43,62 +45,74 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(candidate, digest)
 
 
-def _urlsafe_b64encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
-
-
-def _urlsafe_b64decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode((data + padding).encode("utf-8"))
-
+# ===== JWT Token 生成 =====
 
 def create_access_token(user: User) -> str:
+    """生成 access_token（短时效，默认15分钟）"""
+    now = datetime.now(timezone.utc)
     payload = {
-        "uid": user.id,
+        "sub": str(user.id),
         "username": user.username,
-        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+        "role": user.role,
+        "type": "access",
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.access_token_ttl),
     }
-    payload_bytes = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
-    signature = hmac.new(
-        settings.auth_secret.encode("utf-8"),
-        payload_bytes,
-        hashlib.sha256,
-    ).digest()
-    return f"{_urlsafe_b64encode(payload_bytes)}.{_urlsafe_b64encode(signature)}"
+    return jwt.encode(payload, settings.auth_secret, algorithm="HS256")
 
 
-def decode_access_token(token: str) -> dict:
+def create_refresh_token(user: User) -> str:
+    """生成 refresh_token（长时效，默认7天）"""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user.id),
+        "type": "refresh",
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.refresh_token_ttl),
+    }
+    return jwt.encode(payload, settings.auth_secret, algorithm="HS256")
+
+
+# ===== JWT Token 解码 =====
+
+def decode_token(token: str) -> dict:
+    """解码并验证 JWT（自动检查过期）"""
     try:
-        payload_part, signature_part = token.split(".", 1)
-        payload_bytes = _urlsafe_b64decode(payload_part)
-        signature = _urlsafe_b64decode(signature_part)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录态无效，请重新登录",
-        ) from exc
+        return jwt.decode(token, settings.auth_secret, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token已过期")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token无效")
 
-    expected_signature = hmac.new(
-        settings.auth_secret.encode("utf-8"),
-        payload_bytes,
-        hashlib.sha256,
-    ).digest()
-    if not hmac.compare_digest(signature, expected_signature):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录态校验失败，请重新登录",
-        )
 
-    payload = json.loads(payload_bytes.decode("utf-8"))
-    if int(payload.get("exp", 0)) < int(time.time()):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录已过期，请重新登录",
-        )
-    return payload
+# ===== Token 黑名单 =====
 
+def is_token_blacklisted(jti: str, db: Session) -> bool:
+    """检查 Token 是否在黑名单中"""
+    return db.query(TokenBlacklist).filter(
+        TokenBlacklist.jti == jti,
+        TokenBlacklist.expired_at > datetime.now(timezone.utc),
+    ).first() is not None
+
+
+def blacklist_token(jti: str, expired_at: datetime, db: Session) -> None:
+    """将 Token 加入黑名单"""
+    entry = TokenBlacklist(jti=jti, expired_at=expired_at)
+    db.add(entry)
+    db.commit()
+
+
+def cleanup_expired_blacklist(db: Session) -> None:
+    """清理已过期的黑名单记录（启动时调用）"""
+    db.query(TokenBlacklist).filter(
+        TokenBlacklist.expired_at <= datetime.now(timezone.utc),
+    ).delete()
+    db.commit()
+
+
+# ===== 用户序列化 =====
 
 def serialize_user(user: User) -> dict:
     return {
@@ -110,10 +124,13 @@ def serialize_user(user: User) -> dict:
     }
 
 
+# ===== FastAPI 依赖注入 =====
+
 def get_optional_current_user(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ) -> User | None:
+    """可选认证：无 Token 返回 None，有 Token 则验证并返回用户"""
     if not authorization:
         return None
 
@@ -121,16 +138,16 @@ def get_optional_current_user(
     if scheme.lower() != "bearer" or not token:
         return None
 
-    if token == settings.api_key:
-        return (
-            db.query(User)
-            .filter(User.username == "admin")
-            .first()
-            or db.query(User).filter(User.id == settings.default_user_id).first()
+    payload = decode_token(token)
+
+    # 仅接受 access_token 类型
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token类型错误",
         )
 
-    payload = decode_access_token(token)
-    user = db.query(User).filter(User.id == int(payload["uid"])).first()
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -142,6 +159,7 @@ def get_optional_current_user(
 def get_current_user(
     user: User | None = Depends(get_optional_current_user),
 ) -> User:
+    """强制认证：未登录返回 401"""
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

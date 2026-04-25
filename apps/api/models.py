@@ -94,3 +94,13 @@ class Conversation(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     user = relationship("User", back_populates="conversations")
+
+
+class TokenBlacklist(Base):
+    """JWT refresh_token 黑名单（登出时写入）"""
+    __tablename__ = "token_blacklist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jti = Column(String(36), unique=True, nullable=False, index=True)
+    expired_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())

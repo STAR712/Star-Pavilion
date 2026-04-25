@@ -198,7 +198,7 @@
           <span class="section-note">点击任意卡片即可进入完整链路</span>
         </div>
 
-        <div v-if="loading" class="empty-panel">正在加载书库内容…</div>
+        <SkeletonList v-if="loading" :count="8" />
         <div v-else-if="filteredBooks.length === 0" class="empty-panel">没有匹配的小说，换个关键词试试看。</div>
         <div v-else class="book-grid">
           <article
@@ -283,6 +283,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBookshelfStore } from '@/stores/bookshelf'
 import { fetchLibraryBooks, getCategoryPalette } from '@/services/library'
+import SkeletonList from '@/components/SkeletonList.vue'
 import type { LibraryBook, LibrarySource } from '@/data/mockLibrary'
 
 const route = useRoute()

@@ -1,5 +1,12 @@
 import { defineStore } from 'pinia'
-import { clearAuthToken, getMe, login as apiLogin, register as apiRegister, setAuthToken } from '@/api'
+import axios from 'axios'
+import { clearAccessToken, getMe, login as apiLogin, logout as apiLogout, register as apiRegister, setAccessToken } from '@/api'
+
+type AuthSessionPayload = {
+  access_token?: string
+  token?: string
+  user: any
+}
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -18,25 +25,44 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (state) => Boolean(state.token && state.user),
   },
   actions: {
-    setSession(payload: { token: string; user: any }) {
-      this.token = payload.token
+    setSession(payload: AuthSessionPayload) {
+      const accessToken = payload.access_token || payload.token || ''
+      this.token = accessToken
       this.user = payload.user
-      setAuthToken(payload.token)
+      setAccessToken(accessToken)
     },
     async hydrateSession() {
       if (this.initialized) return
       this.initialized = true
-      if (!this.token) {
-        clearAuthToken()
-        return
+
+      // 兼容旧版后端：如果 persisted state 里已有 token，先恢复到内存。
+      if (this.token) {
+        setAccessToken(this.token)
       }
-      setAuthToken(this.token)
-      if (!this.user) {
+
+      // 兼容旧版 token-only 鉴权：有 token 但没有 user 时，主动拉一次用户信息。
+      if (this.token && !this.user) {
         try {
           const { data } = await getMe()
           this.user = data
+          return
         } catch {
-          this.logout()
+          this.token = ''
+          clearAccessToken()
+        }
+      }
+
+      // 新版后端：通过 HttpOnly refresh_token 静默续期。
+      if (!this.user) {
+        try {
+          const { data } = await axios.post('/api/auth/refresh', null, {
+            withCredentials: true,
+          })
+          this.setSession(data)
+        } catch {
+          // refresh 失败，保持未登录状态
+          this.token = ''
+          this.user = null
         }
       }
     },
@@ -60,10 +86,17 @@ export const useAuthStore = defineStore('auth', {
         this.loading = false
       }
     },
-    logout() {
+    async logout() {
+      // 调用后端 logout（将 refresh_token 加入黑名单 + 清除 Cookie）
+      try {
+        await apiLogout()
+      } catch {
+        // 忽略网络错误
+      }
       this.token = ''
       this.user = null
-      clearAuthToken()
+      this.initialized = false
+      clearAccessToken()
     },
   },
   persist: true,

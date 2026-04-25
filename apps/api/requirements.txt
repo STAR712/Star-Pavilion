@@ -10,3 +10,6 @@ langchain-chroma
 chromadb
 pypdf
 python-multipart
+PyJWT>=2.8.0
+structlog>=24.1.0
+slowapi>=0.1.9

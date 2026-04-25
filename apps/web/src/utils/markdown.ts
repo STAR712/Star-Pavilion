@@ -13,6 +13,14 @@ function renderInline(input: string) {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+    .replace(
+      /\[来源:\s*第(\d+)章\s*([^\]]*)\]/g,
+      '<span class="citation-tag" data-chapter="$1">[来源: 第$1章 $2]</span>'
+    )
+    .replace(
+      /\[来源:\s*小说相关内容\]/g,
+      '<span class="citation-tag">[来源: 小说相关内容]</span>'
+    )
 }
 
 export function renderMarkdown(input: string) {

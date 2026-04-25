@@ -16,7 +16,14 @@
     </header>
 
     <main class="page-shell detail-main">
-      <div v-if="loading" class="status-panel">正在加载书籍详情…</div>
+      <div v-if="loading" class="detail-hero">
+        <SkeletonCard :horizontal="true" />
+        <div style="display:grid;gap:14px;padding:20px;">
+          <div class="skeleton-pulse" style="height:20px;width:40%;border-radius:12px;background:linear-gradient(90deg,rgba(200,180,160,0.15) 25%,rgba(200,180,160,0.3) 50%,rgba(200,180,160,0.15) 75%);background-size:200% 100%;animation:skeleton-shimmer 1.5s ease-in-out infinite;"></div>
+          <div class="skeleton-pulse" style="height:36px;width:70%;border-radius:12px;background:linear-gradient(90deg,rgba(200,180,160,0.15) 25%,rgba(200,180,160,0.3) 50%,rgba(200,180,160,0.15) 75%);background-size:200% 100%;animation:skeleton-shimmer 1.5s ease-in-out infinite;"></div>
+          <div class="skeleton-pulse" style="height:16px;width:90%;border-radius:12px;background:linear-gradient(90deg,rgba(200,180,160,0.15) 25%,rgba(200,180,160,0.3) 50%,rgba(200,180,160,0.15) 75%);background-size:200% 100%;animation:skeleton-shimmer 1.5s ease-in-out infinite;"></div>
+        </div>
+      </div>
 
       <template v-else-if="book">
         <section class="detail-hero">
@@ -128,6 +135,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBookshelfStore } from '@/stores/bookshelf'
 import { fetchBookBundle, getCategoryPalette } from '@/services/library'
+import SkeletonCard from '@/components/SkeletonCard.vue'
 import type { LibraryBook, LibraryChapter, LibrarySource } from '@/data/mockLibrary'
 
 const route = useRoute()
@@ -465,6 +473,11 @@ onMounted(async () => {
 .info-panel {
   display: grid;
   gap: 16px;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 @media (max-width: 1080px) {

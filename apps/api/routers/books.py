@@ -5,8 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from auth_utils import get_current_user
 from database import get_db
-from models import Book, Chapter
+from models import Book, Chapter, User
+from rbac import check_permission
 from services.rag_service import ensure_library_vectorized, get_rag_service
 
 router = APIRouter(prefix="/books", tags=["书籍"])
@@ -133,8 +135,11 @@ def create_book(
     description: str = "",
     is_free: bool = True,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """创建书籍（作家专区）"""
+    if not check_permission(current_user.role, "can_create_book"):
+        raise HTTPException(status_code=403, detail="权限不足：需要作家或管理员权限")
     book = Book(
         title=title,
         author=author,
@@ -158,8 +163,11 @@ def update_book(
     status: Optional[str] = None,
     is_free: Optional[bool] = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """更新书籍信息"""
+    if not check_permission(current_user.role, "can_create_book"):
+        raise HTTPException(status_code=403, detail="权限不足：需要作家或管理员权限")
     book = db.query(Book).filter(Book.id == book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
@@ -180,13 +188,25 @@ def update_book(
 
 
 @router.delete("/{book_id}")
-def delete_book(book_id: int, db: Session = Depends(get_db)):
+def delete_book(
+    book_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """删除书籍"""
+    if not check_permission(current_user.role, "can_delete_book"):
+        raise HTTPException(status_code=403, detail="权限不足：需要管理员权限")
     book = db.query(Book).filter(Book.id == book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
     # 删除关联的章节
     db.query(Chapter).filter(Chapter.book_id == book_id).delete()
+    # 级联删除 ChromaDB 向量
+    try:
+        rag_service = get_rag_service()
+        rag_service.delete_book_vectors(book_id)
+    except Exception:
+        pass  # 向量删除失败不影响主流程
     db.delete(book)
     db.commit()
     return {"message": "删除成功"}
@@ -222,8 +242,11 @@ def create_chapter(
     book_id: int,
     req: CreateChapterRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """创建章节并触发向量化"""
+    if not check_permission(current_user.role, "can_create_book"):
+        raise HTTPException(status_code=403, detail="权限不足：需要作家或管理员权限")
     book = db.query(Book).filter(Book.id == book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
@@ -317,8 +340,14 @@ def get_chapter_content(
 
 
 @router.post("/{book_id}/vectorize")
-def vectorize_book(book_id: int, db: Session = Depends(get_db)):
+def vectorize_book(
+    book_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """手动触发全书向量化"""
+    if not check_permission(current_user.role, "can_create_book"):
+        raise HTTPException(status_code=403, detail="权限不足：需要作家或管理员权限")
     book = db.query(Book).filter(Book.id == book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")

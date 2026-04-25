@@ -17,18 +17,30 @@
       <form class="auth-form" @submit.prevent="handleSubmit">
         <label class="auth-field">
           <span>用户名</span>
-          <input v-model="form.username" type="text" placeholder="输入用户名" />
+          <input
+            v-model="fields.username.value"
+            type="text"
+            placeholder="输入用户名"
+            @blur="touchField('username')"
+          />
+          <p v-if="fields.username.touched && fields.username.error" class="auth-field__error">{{ fields.username.error }}</p>
         </label>
         <label class="auth-field">
           <span>密码</span>
-          <input v-model="form.password" type="password" placeholder="输入密码" />
+          <input
+            v-model="fields.password.value"
+            type="password"
+            placeholder="输入密码"
+            @blur="touchField('password')"
+          />
+          <p v-if="fields.password.touched && fields.password.error" class="auth-field__error">{{ fields.password.error }}</p>
         </label>
-
-        <p v-if="errorMessage" class="auth-error">{{ errorMessage }}</p>
 
         <button class="auth-submit" :disabled="submitting">
           {{ submitting ? '登录中…' : '登录' }}
         </button>
+
+        <p v-if="submitError" class="auth-submit__error">{{ submitError }}</p>
 
         <p class="auth-switch">
           还没有账号？
@@ -40,23 +52,32 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBookshelfStore } from '@/stores/bookshelf'
+import { useFormValidation } from '@/composables/useFormValidation'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const bookshelfStore = useBookshelfStore()
 
-const form = reactive({
-  username: '',
-  password: '',
+const { fields, validateAll, touchField } = useFormValidation({
+  username: [
+    { required: true, message: '请输入用户名' },
+    { minLength: 2, message: '用户名至少 2 个字符' },
+    { maxLength: 20, message: '用户名不超过 20 个字符' },
+    { pattern: /^[a-zA-Z0-9_\u4e00-\u9fa5]+$/, message: '用户名只能包含字母、数字、下划线和中文' },
+  ],
+  password: [
+    { required: true, message: '请输入密码' },
+    { minLength: 3, message: '密码至少 3 个字符' },
+  ],
 })
 
 const submitting = ref(false)
-const errorMessage = ref('')
+const submitError = ref('')
 
 const registerLink = computed(() => ({
   path: '/register',
@@ -64,22 +85,33 @@ const registerLink = computed(() => ({
 }))
 
 async function handleSubmit() {
-  errorMessage.value = ''
-  if (!form.username.trim() || !form.password.trim()) {
-    errorMessage.value = '请输入用户名和密码'
-    return
-  }
+  submitError.value = ''
+  if (!validateAll()) return
 
   submitting.value = true
   try {
     await authStore.login({
-      username: form.username.trim(),
-      password: form.password,
+      username: fields.username.value.trim(),
+      password: fields.password.value,
     })
     await bookshelfStore.fetchBookshelf()
     router.replace(String(route.query.redirect || '/bookshelf'))
   } catch (error: any) {
-    errorMessage.value = error?.response?.data?.detail || '登录失败，请检查账号或密码'
+    const detail = error?.response?.data?.detail
+    if (detail) {
+      // 尝试映射到具体字段
+      if (detail.includes('用户名')) {
+        fields.username.error = detail
+        fields.username.touched = true
+      } else if (detail.includes('密码')) {
+        fields.password.error = detail
+        fields.password.touched = true
+      } else {
+        submitError.value = detail
+      }
+    } else {
+      submitError.value = '登录失败，请检查后端服务和账号密码'
+    }
   } finally {
     submitting.value = false
   }
@@ -190,11 +222,14 @@ async function handleSubmit() {
   border-color: rgba(140, 63, 44, 0.35);
 }
 
-.auth-error {
-  border-radius: 16px;
-  background: rgba(197, 75, 75, 0.08);
-  padding: 12px 14px;
-  color: #a43737;
+.auth-field__error {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #c44040;
+}
+
+.auth-field input.auth-field--error {
+  border-color: rgba(196, 64, 64, 0.4);
 }
 
 .auth-submit {
@@ -207,6 +242,12 @@ async function handleSubmit() {
 
 .auth-submit:disabled {
   opacity: 0.6;
+}
+
+.auth-submit__error {
+  margin: -6px 0 0;
+  font-size: 13px;
+  color: #c44040;
 }
 
 .auth-switch {

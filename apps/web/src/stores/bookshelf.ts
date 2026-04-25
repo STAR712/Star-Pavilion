@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { getStoredToken, getBookshelf, addToBookshelf as apiAdd, removeFromBookshelf as apiRemove, updateProgress as apiUpdateProgress } from '@/api'
+import { getAccessToken, getBookshelf, addToBookshelf as apiAdd, removeFromBookshelf as apiRemove, updateProgress as apiUpdateProgress } from '@/api'
 
 export const useBookshelfStore = defineStore('bookshelf', {
   state: () => ({
@@ -13,7 +13,7 @@ export const useBookshelfStore = defineStore('bookshelf', {
       this.source = 'local'
     },
     async fetchBookshelf() {
-      if (!getStoredToken()) {
+      if (!getAccessToken()) {
         this.clearBooks()
         return
       }
@@ -29,7 +29,7 @@ export const useBookshelfStore = defineStore('bookshelf', {
       }
     },
     async addBook(bookId: number, fallback?: Partial<any>) {
-      if (!getStoredToken()) {
+      if (!getAccessToken()) {
         throw new Error('AUTH_REQUIRED')
       }
       try {
@@ -53,7 +53,7 @@ export const useBookshelfStore = defineStore('bookshelf', {
       }
     },
     async removeBook(bookId: number) {
-      if (!getStoredToken()) {
+      if (!getAccessToken()) {
         throw new Error('AUTH_REQUIRED')
       }
       try {
@@ -65,7 +65,7 @@ export const useBookshelfStore = defineStore('bookshelf', {
       }
     },
     async updateProgress(bookId: number, chapter: number, progress: number, fallback?: Partial<any>) {
-      if (!getStoredToken()) {
+      if (!getAccessToken()) {
         return
       }
       try {

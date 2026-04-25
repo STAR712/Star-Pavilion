@@ -36,7 +36,7 @@
         <router-link class="action-primary" to="/">去首页选书</router-link>
       </section>
 
-      <section v-else class="shelf-grid">
+      <section v-else-if="bookshelfStore.books.length > 0" class="shelf-grid">
         <article
           v-for="item in bookshelfStore.books"
           :key="item.id"
@@ -67,6 +67,10 @@
           </div>
         </article>
       </section>
+
+      <section v-else class="shelf-grid">
+        <SkeletonList :count="3" />
+      </section>
     </main>
   </div>
 </template>
@@ -76,6 +80,7 @@ import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBookshelfStore } from '@/stores/bookshelf'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()

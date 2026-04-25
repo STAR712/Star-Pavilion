@@ -22,13 +22,50 @@
                 <p class="chat-card__subtitle">{{ panelSubtitle }}</p>
               </div>
 
-              <button class="chat-card__close" @click="panelOpen = false">
-                收起
-              </button>
+              <div class="chat-card__header-actions">
+                <button
+                  v-if="authStore.isAuthenticated && conversationList.length > 0"
+                  class="chat-card__history-btn"
+                  @click="showConversationList = !showConversationList"
+                >
+                  历史
+                </button>
+                <button class="chat-card__close" @click="panelOpen = false">
+                  收起
+                </button>
+              </div>
             </header>
 
             <div ref="messageViewport" class="chat-card__messages">
-              <div v-if="messages.length === 0 && !isStreaming" class="chat-empty">
+              <!-- 对话历史列表 -->
+              <div v-if="showConversationList" class="chat-history-panel">
+                <div class="chat-history-panel__header">
+                  <strong>对话历史</strong>
+                  <button class="chat-history-panel__new" @click="startNewConversation">新建对话</button>
+                </div>
+                <div v-if="conversationList.length === 0" class="chat-history-panel__empty">
+                  暂无历史对话
+                </div>
+                <button
+                  v-for="conv in conversationList"
+                  :key="conv.id"
+                  class="chat-history-panel__item"
+                  :class="{ 'chat-history-panel__item--active': conv.id === conversationId }"
+                  @click="loadConversation(conv.id)"
+                >
+                  <div>
+                    <strong>{{ conv.name }}</strong>
+                    <small>{{ conv.timestamp }}</small>
+                  </div>
+                  <span class="chat-history-panel__delete" @click.stop="handleDeleteConversation(conv.id)">&times;</span>
+                </button>
+              </div>
+
+              <div v-if="isLoadingHistory" class="chat-empty">
+                <p>正在加载对话历史...</p>
+              </div>
+
+              <div v-else-if="messages.length === 0 && !isStreaming && !showConversationList" class="chat-empty">
                 <p class="chat-empty__title">问剧情、人物动机、伏笔，或者让助手帮你梳理这一章。</p>
                 <p class="chat-empty__note">是否允许剧透由下方开关决定，关闭时会优先限制在当前阅读进度内回答。</p>
               </div>
@@ -91,9 +128,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { streamChat } from '@/api'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { streamChat, createConversation, getConversation, updateConversation, getConversations, deleteConversation } from '@/api'
 import { renderMarkdown } from '@/utils/markdown'
+import { useAuthStore } from '@/stores/auth'
 
 type ChatMessage = {
   role: 'user' | 'assistant'
@@ -116,6 +154,8 @@ const emit = defineEmits<{
   'update:open': [boolean]
 }>()
 
+const authStore = useAuthStore()
+
 const internalOpen = ref(false)
 const inputText = ref('')
 const messages = ref<ChatMessage[]>([])
@@ -124,6 +164,10 @@ const streamingContent = ref('')
 const searchAll = ref(false)
 const parserBuffer = ref('')
 const messageViewport = ref<HTMLElement | null>(null)
+const conversationId = ref<number | null>(null)
+const isLoadingHistory = ref(false)
+const conversationList = ref<Array<{ id: number; name: string; book_id: number | null; timestamp: string }>>([])
+const showConversationList = ref(false)
 
 const panelOpen = computed({
   get: () => props.open ?? internalOpen.value,
@@ -203,6 +247,90 @@ function consumeSseChunk(chunk: string) {
   }
 }
 
+/** 确保有活跃的 conversation，没有则创建 */
+async function ensureConversation(): Promise<number | null> {
+  if (conversationId.value) return conversationId.value
+  if (!authStore.isAuthenticated) return null
+
+  try {
+    const { data } = await createConversation({
+      book_id: props.bookId,
+      chapter_id: props.chapterId,
+      name: props.bookTitle ? `${props.bookTitle} 对话` : '新对话',
+    })
+    conversationId.value = data.id
+    return data.id
+  } catch {
+    return null
+  }
+}
+
+/** 加载对话历史 */
+async function loadConversation(convId: number) {
+  isLoadingHistory.value = true
+  try {
+    const { data } = await getConversation(convId)
+    conversationId.value = data.id
+    messages.value = (data.messages || []).map((m: any) => ({
+      role: m.role,
+      content: m.content,
+    }))
+    showConversationList.value = false
+    scrollToBottom()
+  } catch {
+    // 加载失败，保持当前状态
+  } finally {
+    isLoadingHistory.value = false
+  }
+}
+
+/** 加载对话列表 */
+async function loadConversationList() {
+  if (!authStore.isAuthenticated) return
+  try {
+    const params: any = {}
+    if (props.bookId) params.book_id = props.bookId
+    const { data } = await getConversations(params)
+    conversationList.value = data || []
+  } catch {
+    conversationList.value = []
+  }
+}
+
+/** 保存消息到后端 */
+async function saveMessages() {
+  if (!conversationId.value) return
+  try {
+    await updateConversation(conversationId.value, {
+      messages: messages.value.map((m) => ({ role: m.role, content: m.content })),
+    })
+  } catch {
+    // 保存失败不影响用户体验
+  }
+}
+
+/** 新建对话 */
+function startNewConversation() {
+  conversationId.value = null
+  messages.value = []
+  streamingContent.value = ''
+  parserBuffer.value = ''
+  showConversationList.value = false
+}
+
+/** 删除对话 */
+async function handleDeleteConversation(convId: number) {
+  try {
+    await deleteConversation(convId)
+    if (convId === conversationId.value) {
+      startNewConversation()
+    }
+    await loadConversationList()
+  } catch {
+    // 删除失败静默处理
+  }
+}
+
 async function sendMessage() {
   const text = inputText.value.trim()
   if (!text || isStreaming.value) return
@@ -215,8 +343,17 @@ async function sendMessage() {
   isStreaming.value = true
   scrollToBottom()
 
+  // 确保有 conversation
+  const convId = await ensureConversation()
+
   try {
-    const response = await streamChat(messages.value, props.bookId, props.chapterId, searchAll.value)
+    const response = await streamChat(
+      messages.value,
+      props.bookId,
+      props.chapterId,
+      searchAll.value,
+      convId,
+    )
     const reader = response.body?.getReader()
     const decoder = new TextDecoder()
 
@@ -238,6 +375,9 @@ async function sendMessage() {
 
     pushAssistantMessage(streamingContent.value)
     streamingContent.value = ''
+
+    // 保存消息到后端
+    await saveMessages()
   } catch {
     pushAssistantMessage('抱歉，当前网络状态不稳定，请稍后再试。')
   } finally {
@@ -247,12 +387,18 @@ async function sendMessage() {
   }
 }
 
+// 打开面板时加载对话列表
+watch(panelOpen, (open) => {
+  if (open) {
+    loadConversationList()
+  }
+})
+
 watch(
   () => [props.bookId, props.chapterId],
   () => {
-    messages.value = []
-    streamingContent.value = ''
-    parserBuffer.value = ''
+    // 切换书籍/章节时，重置对话状态
+    startNewConversation()
   },
 )
 
@@ -607,6 +753,118 @@ watch(
 
 .chat-bubble :deep(a) {
   color: inherit;
+}
+
+.chat-bubble :deep(.citation-tag) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  background: rgba(140, 63, 44, 0.08);
+  padding: 2px 8px;
+  font-size: 0.85em;
+  color: #8c3f2c;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.chat-bubble :deep(.citation-tag:hover) {
+  background: rgba(140, 63, 44, 0.15);
+}
+
+.chat-card__header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chat-card__history-btn {
+  border: 1px solid rgba(126, 84, 60, 0.15);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #7e533f;
+  cursor: pointer;
+}
+
+.chat-history-panel {
+  border: 1px solid rgba(126, 84, 60, 0.1);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.6);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.chat-history-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.chat-history-panel__header strong {
+  font-size: 14px;
+  color: #2c1c16;
+}
+
+.chat-history-panel__new {
+  border: 0;
+  border-radius: 999px;
+  background: rgba(140, 63, 44, 0.1);
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #8c3f2c;
+  cursor: pointer;
+}
+
+.chat-history-panel__empty {
+  text-align: center;
+  padding: 16px;
+  color: #977566;
+  font-size: 13px;
+}
+
+.chat-history-panel__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.5);
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.chat-history-panel__item:hover {
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.chat-history-panel__item--active {
+  background: rgba(140, 63, 44, 0.1);
+  border: 1px solid rgba(140, 63, 44, 0.2);
+}
+
+.chat-history-panel__item strong {
+  display: block;
+  font-size: 13px;
+  color: #2c1c16;
+}
+
+.chat-history-panel__item small {
+  font-size: 11px;
+  color: #977566;
+}
+
+.chat-history-panel__delete {
+  font-size: 18px;
+  color: #c47a6a;
+  cursor: pointer;
+  padding: 0 4px;
 }
 
 @keyframes pulse {
