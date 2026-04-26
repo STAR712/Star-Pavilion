@@ -32,13 +32,13 @@ export const useAuthStore = defineStore('auth', {
       setAccessToken(accessToken)
     },
     async hydrateSession() {
-      if (this.initialized) return
-      this.initialized = true
-
       // 兼容旧版后端：如果 persisted state 里已有 token，先恢复到内存。
       if (this.token) {
         setAccessToken(this.token)
       }
+
+      if (this.initialized) return
+      this.initialized = true
 
       // 兼容旧版 token-only 鉴权：有 token 但没有 user 时，主动拉一次用户信息。
       if (this.token && !this.user) {
@@ -99,5 +99,7 @@ export const useAuthStore = defineStore('auth', {
       clearAccessToken()
     },
   },
-  persist: true,
+  persist: {
+    paths: ['token', 'user'],
+  },
 })

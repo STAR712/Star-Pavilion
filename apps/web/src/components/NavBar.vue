@@ -14,6 +14,7 @@
 
       <div class="nav-links">
         <router-link to="/" class="nav-link">首页</router-link>
+        <router-link to="/library" class="nav-link">全部作品</router-link>
         <router-link to="/rank" class="nav-link">排行榜</router-link>
         <router-link to="/author" class="nav-link">作家专区</router-link>
         <router-link to="/bookshelf" class="nav-link">我的书架</router-link>

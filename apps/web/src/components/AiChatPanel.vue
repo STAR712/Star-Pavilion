@@ -65,7 +65,10 @@
                 <p>正在加载对话历史...</p>
               </div>
 
-              <div v-else-if="messages.length === 0 && !isStreaming && !showConversationList" class="chat-empty">
+              <div
+                v-else-if="messages.length === 0 && !isStreaming && !showConversationList"
+                class="chat-empty"
+              >
                 <p class="chat-empty__title">问剧情、人物动机、伏笔，或者让助手帮你梳理这一章。</p>
                 <p class="chat-empty__note">是否允许剧透由下方开关决定，关闭时会优先限制在当前阅读进度内回答。</p>
               </div>
@@ -168,7 +171,6 @@ const conversationId = ref<number | null>(null)
 const isLoadingHistory = ref(false)
 const conversationList = ref<Array<{ id: number; name: string; book_id: number | null; timestamp: string }>>([])
 const showConversationList = ref(false)
-
 const panelOpen = computed({
   get: () => props.open ?? internalOpen.value,
   set: (value: boolean) => {

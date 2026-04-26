@@ -329,7 +329,16 @@ class RAGService:
         """流式对话方法"""
         uid = user_id if user_id is not None else settings.default_user_id
 
-        base_prompt = "你是一个智能小说阅读助手，可以帮助读者理解小说内容、分析人物关系、预测剧情走向。请用简洁易懂的语言回答问题。"
+        scope_hint = (
+            "如果上下文不足，不要透露或猜测后续剧情。"
+            if not search_all
+            else "如果需要分析后续剧情，也必须基于检索到的原文内容。"
+        )
+        base_prompt = (
+            "你是一个智能小说阅读助手，可以帮助读者理解小说内容、梳理人物关系和分析情节线索。"
+            "请优先依据提供的小说原文、当前章节上下文和历史对话回答，不要编造不存在的情节。"
+            f"{scope_hint}请用简洁易懂的语言回答问题。"
+        )
 
         # 检索小说内容
         search_results = []

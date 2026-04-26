@@ -161,10 +161,11 @@ const chatOpen = computed({
 })
 
 const normalizedTheme = computed<'eye' | 'paper' | 'night'>(() => {
-  if (readerStore.theme === 'light') return 'eye'
-  if (readerStore.theme === 'sepia') return 'paper'
-  if (readerStore.theme === 'dark') return 'night'
-  return readerStore.theme as 'eye' | 'paper' | 'night'
+  const theme = readerStore.theme as string
+  if (theme === 'light') return 'eye'
+  if (theme === 'sepia') return 'paper'
+  if (theme === 'dark') return 'night'
+  return theme as 'eye' | 'paper' | 'night'
 })
 
 const readerCssVars = computed(() => {

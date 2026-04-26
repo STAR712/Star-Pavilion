@@ -47,7 +47,6 @@ async def stream_chat(
                 role=user_role,
                 conversation_id=req.conversation_id,
             ):
-                # chunk 可能是 str (content) 或 dict (memory_stored 等事件)
                 if isinstance(chunk, str):
                     full_response += chunk
                     data = json.dumps({"content": chunk}, ensure_ascii=False)
@@ -59,7 +58,6 @@ async def stream_chat(
             # 流式结束后，存储对话记忆
             if req.conversation_id and full_response:
                 try:
-                    # 提取最后一条用户消息
                     last_user_msg = ""
                     for msg in reversed(req.messages):
                         if msg.get("role") == "user":
